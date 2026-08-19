@@ -109,6 +109,13 @@ const GATEWAY_ROUTES: GatewayRoute[] = [
   { test: (m, p) => m === 'GET' && p === '/api/branches', resolve: () => ({ file: 'branches/list.php' }) },
 
   { test: (m, p) => m === 'GET' && p === '/api/reports', resolve: (_m, _p, q) => ({ file: 'reports/summary.php', extraQuery: Object.fromEntries(q) }) },
+
+  // M-Pesa STK push runs entirely in PHP (gateway/payments/mpesa_stk.php)
+  // so it never needs DATABASE_URL/Prisma from the Next.js side — see
+  // gateway/README.md. The webhook (gateway/webhooks/mpesa_callback.php)
+  // is a separate public URL Daraja calls directly; it's never reached
+  // through apiFetch at all.
+  { test: (m, p) => m === 'POST' && p === '/api/payments/mpesa', resolve: () => ({ file: 'payments/mpesa_stk.php' }) },
 ];
 
 function resolveGatewayRoute(method: string, path: string, search: URLSearchParams) {
@@ -169,9 +176,22 @@ async function gatewayFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+// ------------------------------------------------------------------
+// M-Pesa now has a full PHP implementation (see GATEWAY_ROUTES above)
+// and is allowed to route through the gateway like everything else.
+// PesaPal and card payments are NOT ported to PHP — they still need a
+// long-lived Next.js server to receive their callbacks — so those
+// always hit the Next.js server directly, even in gateway mode, and
+// require DATABASE_URL to be set there.
+// ------------------------------------------------------------------
+const ALWAYS_DIRECT = [/^\/api\/payments\/pesapal/, /^\/api\/payments\/cards/, /^\/api\/webhooks\//];
+
 /** Thin fetch wrapper: JSON in/out, throws with the server's error message on failure. */
 export async function apiFetch<T = unknown>(url: string, init?: RequestInit): Promise<T> {
-  if (BACKEND_MODE === 'gateway') {
+  const path = url.split('?')[0];
+  const forceDirect = ALWAYS_DIRECT.some((re) => re.test(path));
+
+  if (BACKEND_MODE === 'gateway' && !forceDirect) {
     return gatewayFetch<T>(url, init);
   }
 

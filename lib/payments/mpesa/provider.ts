@@ -16,6 +16,17 @@ function baseUrl() {
   return process.env.MPESA_ENV === 'production' ? DARAJA_BASE.production : DARAJA_BASE.sandbox;
 }
 
+/**
+ * 'paybill' (default) or 'till'. Controls only the Daraja
+ * TransactionType sent with the STK push — CustomerPayBillOnline vs
+ * CustomerBuyGoodsOnline. Everything else (shortcode, passkey, the
+ * push payload shape) is identical for both. Keep in sync with
+ * gateway/payments/_mpesa_client.php's gw_mpesa_transaction_type().
+ */
+function transactionType(): 'CustomerBuyGoodsOnline' | 'CustomerPayBillOnline' {
+  return process.env.MPESA_SHORTCODE_TYPE === 'till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
+}
+
 async function getAccessToken(): Promise<string> {
   const key = process.env.MPESA_CONSUMER_KEY;
   const secret = process.env.MPESA_CONSUMER_SECRET;
@@ -68,7 +79,7 @@ export class MpesaProvider implements PaymentProvider {
         BusinessShortCode: shortcode,
         Password: password,
         Timestamp: ts,
-        TransactionType: 'CustomerPayBillOnline',
+        TransactionType: transactionType(),
         Amount: Math.round(params.amount),
         PartyA: params.phone,
         PartyB: shortcode,

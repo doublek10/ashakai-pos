@@ -20,6 +20,10 @@ export default function DashboardClient({ ownerName }: { ownerName: string }) {
     apiFetch<Report>('/api/reports').then(setReport).catch(() => {});
   }, []);
 
+  const byPaymentMethod = report?.byPaymentMethod ?? {};
+  const topCashiers = report?.topCashiers ?? [];
+  const lowStock = report?.lowStock ?? [];
+
   return (
     <div className="min-h-screen bg-paper">
       <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-black/5">
@@ -46,10 +50,10 @@ export default function DashboardClient({ ownerName }: { ownerName: string }) {
           <div className="bg-white rounded-xl border border-black/5 p-5">
             <p className="text-xs font-medium text-ink/40 uppercase tracking-wide mb-4">By payment method</p>
             <div className="space-y-2">
-              {Object.entries(report?.byPaymentMethod ?? {}).length === 0 && (
+              {Object.entries(byPaymentMethod).length === 0 && (
                 <p className="text-sm text-ink/40">No sales yet today.</p>
               )}
-              {Object.entries(report?.byPaymentMethod ?? {}).map(([method, amount]) => (
+              {Object.entries(byPaymentMethod).map(([method, amount]) => (
                 <div key={method} className="flex justify-between text-sm">
                   <span className="text-ink/60">{method}</span>
                   <span className="font-medium">KES {amount.toLocaleString()}</span>
@@ -61,8 +65,8 @@ export default function DashboardClient({ ownerName }: { ownerName: string }) {
           <div className="bg-white rounded-xl border border-black/5 p-5">
             <p className="text-xs font-medium text-ink/40 uppercase tracking-wide mb-4">Top cashiers today</p>
             <div className="space-y-2">
-              {(report?.topCashiers ?? []).length === 0 && <p className="text-sm text-ink/40">No sales yet today.</p>}
-              {report?.topCashiers.map((c, i) => (
+              {topCashiers.length === 0 && <p className="text-sm text-ink/40">No sales yet today.</p>}
+              {topCashiers.map((c, i) => (
                 <div key={c.name} className="flex justify-between text-sm">
                   <span className="text-ink/60">{i + 1}. {c.name}</span>
                   <span className="font-medium">KES {c.total.toLocaleString()}</span>
@@ -74,7 +78,7 @@ export default function DashboardClient({ ownerName }: { ownerName: string }) {
 
         <div className="bg-white rounded-xl border border-black/5 p-5">
           <p className="text-xs font-medium text-ink/40 uppercase tracking-wide mb-4">Low stock</p>
-          {(report?.lowStock ?? []).length === 0 ? (
+          {lowStock.length === 0 ? (
             <p className="text-sm text-ink/40">Nothing below its reorder level.</p>
           ) : (
             <table className="w-full text-sm">
@@ -87,7 +91,7 @@ export default function DashboardClient({ ownerName }: { ownerName: string }) {
                 </tr>
               </thead>
               <tbody>
-                {report?.lowStock.map((p) => {
+                {lowStock.map((p) => {
                   const isWeight = p.trackingType === 'WEIGHT';
                   const unit = isWeight ? ` ${p.weightUnit ?? 'kg'}` : '';
                   return (

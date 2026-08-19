@@ -105,6 +105,8 @@ const GATEWAY_ROUTES: GatewayRoute[] = [
   { test: (m, p) => m === 'GET' && p === '/api/users', resolve: () => ({ file: 'users/list.php' }) },
   { test: (m, p) => m === 'POST' && p === '/api/users', resolve: () => ({ file: 'users/create.php' }) },
   { test: (m, p) => m === 'PATCH' && /^\/api\/users\/[^/]+$/.test(p), resolve: (_m, p) => ({ file: 'users/update.php', extraQuery: { userId: p.split('/').pop()! } }) },
+  
+  { test: (m, p) => m === 'GET' && p === '/api/branches', resolve: () => ({ file: 'branches/list.php' }) },
 
   { test: (m, p) => m === 'GET' && p === '/api/reports', resolve: (_m, _p, q) => ({ file: 'reports/summary.php', extraQuery: Object.fromEntries(q) }) },
 ];

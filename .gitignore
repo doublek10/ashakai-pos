@@ -1,0 +1,7 @@
+node_modules/
+.next/
+.env
+.env.local
+scale-bridge/node_modules/
+scale-bridge/.env
+gateway/config.local.php

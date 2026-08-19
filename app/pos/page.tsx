@@ -1,19 +1,15 @@
 import { redirect } from 'next/navigation';
 import { getSession } from '@/lib/auth/session';
-import { prisma } from '@/lib/database/client';
-import PosScreen from './components/PosScreen';
+import PosPageClient from './components/PosPageClient';
 
 export default async function PosPage() {
   const session = await getSession();
   if (!session) redirect('/login');
 
-  // Any authenticated role can staff the till in this scaffold; tighten
-  // to CASHIER-only with `if (session.role !== 'CASHIER') redirect(...)`
-  // if owners/managers should never see this screen.
-  const branch = await prisma.branch.findFirst({ where: { companyId: session.companyId } });
-  if (!branch) {
-    return <div className="p-8 text-sm text-ink/60">No branch configured yet. Ask the owner to set one up.</div>;
-  }
-
-  return <PosScreen cashierName={session.name} branchId={branch.id} />;
+  // Branch resolution now happens client-side via apiFetch('/api/branches')
+  // (see PosPageClient) instead of a direct prisma call here — a direct
+  // prisma.branch.findFirst() on the server breaks in gateway mode, since
+  // DATABASE_URL is intentionally not set when the DB is only reachable
+  // through the PHP gateway on cPanel.
+  return <PosPageClient cashierName={session.name} />;
 }

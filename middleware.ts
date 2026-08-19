@@ -5,7 +5,11 @@ import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
 // pages. This is a UX convenience only — it is NOT the security boundary.
 // The real boundary is requirePermission() inside every API route, which
 // runs regardless of what this middleware does.
-const PUBLIC_PATHS = ['/login', '/api/auth/login'];
+//
+// NOTE: /api/auth/gateway-session must stay public — it's the endpoint
+// that ESTABLISHES the session cookie after a gateway-mode login, so it
+// can't require one to already exist.
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/gateway-session'];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -20,7 +24,7 @@ export function middleware(req: NextRequest) {
   }
 
   const hasSession = req.cookies.has(SESSION_COOKIE_NAME);
-  if (!hasSession && (pathname.startsWith('/app') || pathname.startsWith('/api'))) {
+  if (!hasSession) {
     if (pathname.startsWith('/api')) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }

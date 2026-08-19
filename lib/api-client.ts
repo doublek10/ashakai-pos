@@ -13,6 +13,12 @@
  * and talks to the database itself, then returns JSON. Every call
  * site in the app keeps using apiFetch('/api/...') unchanged; only
  * this file knows which mode is active.
+ *
+ * NOTE: in gateway mode, login/logout also call
+ * /api/auth/gateway-session on the Next.js server itself, so that
+ * server components (getSession()-gated pages, middleware) can see
+ * the login too — the gateway's own token only lives in this
+ * browser's localStorage otherwise.
  */
 
 const BACKEND_MODE = process.env.NEXT_PUBLIC_BACKEND_MODE === 'gateway' ? 'gateway' : 'nextjs';
@@ -36,6 +42,35 @@ function setGatewayToken(token: string | null) {
   if (typeof window === 'undefined') return;
   if (token) window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
   else window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
+// ------------------------------------------------------------------
+// Bridges the gateway token to the Next.js server's own session
+// cookie (see app/api/auth/gateway-session/route.ts). Best-effort:
+// failures here are logged but don't block the gateway call itself
+// from resolving, since apps hosted purely client-side (no Next.js
+// server, e.g. a static export) won't have this route at all.
+// ------------------------------------------------------------------
+
+async function syncServerSession(token: string) {
+  try {
+    await fetch('/api/auth/gateway-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ token }),
+    });
+  } catch (err) {
+    console.error('Failed to sync gateway session with Next.js server:', err);
+  }
+}
+
+async function clearServerSession() {
+  try {
+    await fetch('/api/auth/gateway-session', { method: 'DELETE', credentials: 'include' });
+  } catch (err) {
+    console.error('Failed to clear Next.js server session:', err);
+  }
 }
 
 // ------------------------------------------------------------------
@@ -116,9 +151,18 @@ async function gatewayFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
   // Login responses carry the token the gateway wants us to use on
   // every future request — stash it automatically so callers don't
-  // have to think about it.
-  if ((data as any)?.token) setGatewayToken((data as any).token);
-  if (path === '/api/auth/logout') setGatewayToken(null);
+  // have to think about it. Also exchange it for a real Next.js
+  // session cookie, so server components and middleware can see the
+  // login too — the gateway token alone only lives in localStorage,
+  // which the Next.js server never sees on its own.
+  if ((data as any)?.token) {
+    setGatewayToken((data as any).token);
+    await syncServerSession((data as any).token);
+  }
+  if (path === '/api/auth/logout') {
+    setGatewayToken(null);
+    await clearServerSession();
+  }
 
   return data as T;
 }

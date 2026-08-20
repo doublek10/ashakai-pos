@@ -116,6 +116,13 @@ const GATEWAY_ROUTES: GatewayRoute[] = [
   // is a separate public URL Daraja calls directly; it's never reached
   // through apiFetch at all.
   { test: (m, p) => m === 'POST' && p === '/api/payments/mpesa', resolve: () => ({ file: 'payments/mpesa_stk.php' }) },
+
+  // "Customer already paid" (no STK) + manual C2B reconciliation flow —
+  // see gateway/webhooks/mpesa_c2b_confirmation.php for the listener
+  // side. These three are new UI-facing endpoints for that flow.
+  { test: (m, p) => m === 'POST' && p === '/api/payments/mpesa/manual', resolve: () => ({ file: 'payments/mpesa_manual_pending.php' }) },
+  { test: (m, p) => m === 'GET' && p === '/api/payments/mpesa/c2b-lookup', resolve: (_m, _p, q) => ({ file: 'payments/mpesa_c2b_lookup.php', extraQuery: Object.fromEntries(q) }) },
+  { test: (m, p) => m === 'POST' && p === '/api/payments/mpesa/c2b-match', resolve: () => ({ file: 'payments/mpesa_c2b_match.php' }) },
 ];
 
 function resolveGatewayRoute(method: string, path: string, search: URLSearchParams) {

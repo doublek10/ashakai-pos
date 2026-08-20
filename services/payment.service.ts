@@ -1,5 +1,4 @@
-import { nanoid } from 'nanoid';
-import { PaymentMethod, PaymentProviderName } from '@prisma/client';
+import { PaymentMethod, PaymentProviderName, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/database/client';
 import { ApiError } from '@/lib/permissions/guard';
 import { PaymentProvider } from '@/lib/payments/payment-provider';
@@ -14,6 +13,24 @@ const providers: Record<PaymentProviderName, PaymentProvider | null> = {
   CARD: new CardProvider(),
   CASH: null, // cash never goes through a provider — handled synchronously in sales.service
 };
+
+/**
+ * Short merchant/account reference. Daraja's AccountReference field is
+ * capped at 12 characters and silently truncates anything longer — the
+ * old `POS-${saleId}-${nanoid(6)}` scheme (~37 chars) was truncated on
+ * the customer's STK prompt. "ashekia-XXX" is 11 chars. Excludes
+ * visually ambiguous characters (0/O, 1/I) since this may be read off
+ * a phone screen. Keep in sync with
+ * gateway/payments/_mpesa_client.php's gw_mpesa_short_reference().
+ */
+const REFERENCE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+function shortMerchantReference(): string {
+  let suffix = '';
+  for (let i = 0; i < 3; i++) {
+    suffix += REFERENCE_CHARS[Math.floor(Math.random() * REFERENCE_CHARS.length)];
+  }
+  return `ashekia-${suffix}`;
+}
 
 export function getProvider(name: Exclude<PaymentProviderName, 'CASH'>): PaymentProvider {
   const provider = providers[name];
@@ -52,7 +69,6 @@ export async function initiateDigitalPayment(input: InitiateDigitalPaymentInput)
     // no cashPayments -> sale is left PENDING
   });
 
-  const merchantReference = `POS-${sale.id}-${nanoid(6)}`;
   const provider = getProvider(input.provider);
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
@@ -63,20 +79,38 @@ export async function initiateDigitalPayment(input: InitiateDigitalPaymentInput)
       ? `${appUrl}/api/webhooks/pesapal`
       : `${appUrl}/api/webhooks/cards/${(process.env.CARD_PROVIDER ?? 'default')}`;
 
-  const transaction = await prisma.paymentTransaction.create({
-    data: {
-      companyId: input.companyId,
-      saleId: sale.id,
-      provider: input.provider,
-      paymentMethod: input.paymentMethod,
-      merchantReference,
-      amount: sale.total,
-      currency: 'KES',
-      status: 'PENDING',
-      customerPhone: input.phone,
-      customerEmail: input.email,
-    },
-  });
+  // Short reference (see shortMerchantReference()); retry a few times on
+  // the rare unique-constraint collision rather than failing the sale.
+  let merchantReference: string | undefined;
+  let transaction: Awaited<ReturnType<typeof prisma.paymentTransaction.create>> | undefined;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = shortMerchantReference();
+    try {
+      transaction = await prisma.paymentTransaction.create({
+        data: {
+          companyId: input.companyId,
+          saleId: sale.id,
+          provider: input.provider,
+          paymentMethod: input.paymentMethod,
+          merchantReference: candidate,
+          amount: sale.total,
+          currency: 'KES',
+          status: 'PENDING',
+          customerPhone: input.phone,
+          customerEmail: input.email,
+        },
+      });
+      merchantReference = candidate;
+      break;
+    } catch (err) {
+      // P2002 = unique constraint violation on merchantReference — retry with a new one.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') continue;
+      throw err;
+    }
+  }
+  if (!merchantReference || !transaction) {
+    throw new ApiError(500, 'Could not generate a unique payment reference — please retry');
+  }
 
   try {
     const result = await provider.createPayment({

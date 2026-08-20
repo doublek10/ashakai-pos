@@ -1,246 +1,238 @@
-import { PaymentMethod, PaymentProviderName, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/database/client';
+import { recordAudit } from '@/lib/audit';
 import { ApiError } from '@/lib/permissions/guard';
-import { PaymentProvider } from '@/lib/payments/payment-provider';
-import { MpesaProvider } from '@/lib/payments/mpesa/provider';
-import { PesapalProvider } from '@/lib/payments/pesapal/provider';
-import { CardProvider } from '@/lib/payments/cards/provider';
-import { createSale, completeSaleFromPayment, CartLineInput } from './sales.service';
 
-const providers: Record<PaymentProviderName, PaymentProvider | null> = {
-  MPESA: new MpesaProvider(),
-  PESAPAL: new PesapalProvider(),
-  CARD: new CardProvider(),
-  CASH: null, // cash never goes through a provider — handled synchronously in sales.service
-};
-
-/**
- * Short merchant/account reference. Daraja's AccountReference field is
- * capped at 12 characters and silently truncates anything longer — the
- * old `POS-${saleId}-${nanoid(6)}` scheme (~37 chars) was truncated on
- * the customer's STK prompt. "ashekia-XXX" is 11 chars. Excludes
- * visually ambiguous characters (0/O, 1/I) since this may be read off
- * a phone screen. Keep in sync with
- * gateway/payments/_mpesa_client.php's gw_mpesa_short_reference().
- */
-const REFERENCE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-function shortMerchantReference(): string {
-  let suffix = '';
-  for (let i = 0; i < 3; i++) {
-    suffix += REFERENCE_CHARS[Math.floor(Math.random() * REFERENCE_CHARS.length)];
-  }
-  return `ashekia-${suffix}`;
-}
-
-export function getProvider(name: Exclude<PaymentProviderName, 'CASH'>): PaymentProvider {
-  const provider = providers[name];
-  if (!provider) throw new ApiError(400, `No provider configured for ${name}`);
-  return provider;
-}
-
-export interface InitiateDigitalPaymentInput {
+export interface CreateProductInput {
   companyId: string;
-  branchId: string;
-  cashierId: string;
-  customerId?: string;
-  items: CartLineInput[];
-  provider: 'MPESA' | 'PESAPAL' | 'CARD';
-  paymentMethod: PaymentMethod;
-  phone?: string;
-  email?: string;
+  actorUserId: string;
+  categoryId?: string;
+  brandId?: string;
+  name: string;
+  description?: string;
+  sku: string;
+  costPrice: number;
+  sellingPrice: number;
+  taxRate?: number;
+  /** Whole-unit reorder point for PIECE products, or a weight threshold (in weightUnit) for WEIGHT products. */
+  reorderLevel?: number;
+  unit?: string;
+  /** PIECE (default) = countable units. WEIGHT = sold/stocked by weight (loose cereal, grain, flour). */
+  trackingType?: 'PIECE' | 'WEIGHT';
+  /** Only used when trackingType = WEIGHT. "kg" or "g". Defaults to "kg". */
+  weightUnit?: 'kg' | 'g';
+  imageUrl?: string;
+  barcodes?: string[];
 }
 
-/**
- * Creates a PENDING sale (server-priced, per spec section 42), then a
- * PENDING PaymentTransaction, then calls out to the chosen provider.
- * The sale is only ever completed by completeSaleFromPayment(), which
- * is exclusively invoked from a verified, idempotency-checked webhook
- * — never from this function's return path. This means a customer who
- * closes the tab mid-STK-push simply leaves a PENDING sale + payment,
- * which is safe: no stock was touched, no receipt was printed.
- */
-export async function initiateDigitalPayment(input: InitiateDigitalPaymentInput) {
-  const sale = await createSale({
-    companyId: input.companyId,
-    branchId: input.branchId,
-    cashierId: input.cashierId,
-    customerId: input.customerId,
-    items: input.items,
-    // no cashPayments -> sale is left PENDING
+export async function createProduct(input: CreateProductInput) {
+  const existing = await prisma.product.findUnique({
+    where: { companyId_sku: { companyId: input.companyId, sku: input.sku } },
   });
-
-  const provider = getProvider(input.provider);
-
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
-  const callbackUrl =
-    input.provider === 'MPESA'
-      ? `${appUrl}/api/webhooks/mpesa`
-      : input.provider === 'PESAPAL'
-      ? `${appUrl}/api/webhooks/pesapal`
-      : `${appUrl}/api/webhooks/cards/${(process.env.CARD_PROVIDER ?? 'default')}`;
-
-  // Short reference (see shortMerchantReference()); retry a few times on
-  // the rare unique-constraint collision rather than failing the sale.
-  let merchantReference: string | undefined;
-  let transaction: Awaited<ReturnType<typeof prisma.paymentTransaction.create>> | undefined;
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const candidate = shortMerchantReference();
-    try {
-      transaction = await prisma.paymentTransaction.create({
-        data: {
-          companyId: input.companyId,
-          saleId: sale.id,
-          provider: input.provider,
-          paymentMethod: input.paymentMethod,
-          merchantReference: candidate,
-          amount: sale.total,
-          currency: 'KES',
-          status: 'PENDING',
-          customerPhone: input.phone,
-          customerEmail: input.email,
-        },
-      });
-      merchantReference = candidate;
-      break;
-    } catch (err) {
-      // P2002 = unique constraint violation on merchantReference — retry with a new one.
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') continue;
-      throw err;
-    }
+  if (existing) {
+    throw new ApiError(409, `A product with SKU "${input.sku}" already exists`);
   }
-  if (!merchantReference || !transaction) {
-    throw new ApiError(500, 'Could not generate a unique payment reference — please retry');
-  }
+
+  const cleanBarcodes = input.barcodes
+    ?.map((b) => b.trim())
+    .filter((b) => b.length > 0);
 
   try {
-    const result = await provider.createPayment({
-      merchantReference,
-      amount: Number(sale.total),
-      currency: 'KES',
-      phone: input.phone,
-      email: input.email,
-      description: `Sale ${sale.id}`,
-      callbackUrl,
+    const product = await prisma.$transaction(async (tx) => {
+      const created = await tx.product.create({
+        data: {
+          companyId: input.companyId,
+          categoryId: input.categoryId,
+          brandId: input.brandId,
+          name: input.name,
+          description: input.description,
+          sku: input.sku,
+          costPrice: input.costPrice,
+          sellingPrice: input.sellingPrice,
+          taxRate: input.taxRate ?? 0,
+          reorderLevel: input.reorderLevel ?? 0,
+          unit: input.unit ?? (input.trackingType === 'WEIGHT' ? (input.weightUnit ?? 'kg') : 'pcs'),
+          trackingType: input.trackingType ?? 'PIECE',
+          weightUnit: input.trackingType === 'WEIGHT' ? (input.weightUnit ?? 'kg') : null,
+          imageUrl: input.imageUrl,
+          barcodes: cleanBarcodes?.length
+            ? { create: cleanBarcodes.map((barcode) => ({ barcode })) }
+            : undefined,
+        },
+        include: { barcodes: true },
+      });
+
+      await recordAudit(tx, {
+        companyId: input.companyId,
+        userId: input.actorUserId,
+        action: 'PRODUCT_CREATED',
+        entity: 'Product',
+        entityId: created.id,
+        newData: created,
+      });
+
+      return created;
     });
 
-    await prisma.paymentTransaction.update({
-      where: { id: transaction.id },
-      data: { providerReference: result.providerReference, status: 'PROCESSING', rawResponse: result.raw as any },
-    });
-
-    return { sale, transaction, redirectUrl: result.redirectUrl };
-  } catch (err) {
-    await prisma.paymentTransaction.update({
-      where: { id: transaction.id },
-      data: { status: 'FAILED', rawResponse: { error: String(err) } as any },
-    });
+    return product;
+  } catch (err: any) {
+    // Unique constraint on ProductBarcode.barcode — same barcode
+    // already belongs to another product (barcodes are unique
+    // company-wide, same as a UPC/EAN would be in real life).
+    if (err?.code === 'P2002') {
+      throw new ApiError(409, 'One of those barcodes is already in use by another product');
+    }
     throw err;
   }
 }
 
-/**
- * Handles a verified webhook event with full idempotency:
- *   1. Insert a PaymentEvent row keyed on (provider, externalEventId).
- *      The unique constraint means a duplicate delivery throws here
- *      and we return early — spec sections 33/40/41.
- *   2. Look up the PaymentTransaction by merchantReference.
- *   3. Verify amount matches (never trust the webhook blindly).
- *   4. Update the transaction status.
- *   5. If COMPLETED, call completeSaleFromPayment() to reduce stock,
- *      record the sale payment, and generate the receipt.
- */
-export async function processPaymentWebhook(params: {
-  providerName: PaymentProviderName;
-  externalEventId: string;
-  eventType: string;
-  merchantReference: string;
-  status: 'COMPLETED' | 'FAILED' | 'CANCELLED';
-  amount: number;
-  providerReference?: string;
-  raw: unknown;
-}) {
-  const transaction = await prisma.paymentTransaction.findUnique({
-    where: { merchantReference: params.merchantReference },
-    include: { sale: true },
+export interface UpdateProductInput {
+  companyId: string;
+  actorUserId: string;
+  productId: string;
+  data: Partial<{
+    name: string;
+    description: string;
+    categoryId: string;
+    brandId: string;
+    costPrice: number;
+    sellingPrice: number;
+    taxRate: number;
+    reorderLevel: number;
+    unit: string;
+    trackingType: 'PIECE' | 'WEIGHT';
+    weightUnit: 'kg' | 'g';
+    imageUrl: string;
+    isActive: boolean;
+    /** When provided, REPLACES the product's entire set of barcodes — not a merge/append. */
+    barcodes: string[];
+  }>;
+}
+
+export async function updateProduct(input: UpdateProductInput) {
+  const before = await prisma.product.findFirst({
+    where: { id: input.productId, companyId: input.companyId },
   });
+  if (!before) throw new ApiError(404, 'Product not found');
 
-  if (!transaction) {
-    // Don't throw 500 — a provider retrying a webhook for a transaction
-    // we somehow don't recognize should get a definitive "we saw this,
-    // stop retrying" style response after logging, not a crash loop.
-    console.error('Webhook for unknown merchantReference', params.merchantReference);
-    return { handled: false as const };
-  }
+  const priceChanged =
+    input.data.sellingPrice !== undefined &&
+    Number(before.sellingPrice) !== input.data.sellingPrice;
 
-  let alreadyProcessed = false;
+  // barcodes isn't a column on Product — it's a separate relation, so
+  // it's pulled out of `data` and handled with its own delete+create
+  // below rather than being passed straight to product.update().
+  const { barcodes, ...rest } = input.data;
+  const data = { ...rest };
+  // If the product is being switched to PIECE tracking, drop any
+  // leftover weightUnit; if switched to WEIGHT with no unit given,
+  // default to kg.
+  if (data.trackingType === 'PIECE') data.weightUnit = null as any;
+  if (data.trackingType === 'WEIGHT' && !data.weightUnit) data.weightUnit = 'kg';
+
+  const cleanBarcodes = barcodes
+    ?.map((b) => b.trim())
+    .filter((b) => b.length > 0);
+
   try {
-    await prisma.paymentEvent.create({
-      data: {
-        paymentTransactionId: transaction.id,
-        provider: params.providerName,
-        eventType: params.eventType,
-        externalEventId: params.externalEventId,
-        payload: params.raw as any,
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      const product = await tx.product.update({
+        where: { id: input.productId },
+        data,
+      });
+
+      // Replace-the-whole-set semantics: clear what's there, then
+      // re-create whatever the form submitted. Simpler and safer than
+      // diffing add/remove, and matches gateway/products/update.php.
+      if (cleanBarcodes) {
+        await tx.productBarcode.deleteMany({ where: { productId: input.productId } });
+        if (cleanBarcodes.length > 0) {
+          await tx.productBarcode.createMany({
+            data: cleanBarcodes.map((barcode) => ({ productId: input.productId, barcode })),
+          });
+        }
+      }
+
+      await recordAudit(tx, {
+        companyId: input.companyId,
+        userId: input.actorUserId,
+        action: priceChanged ? 'PRODUCT_PRICE_CHANGED' : 'PRODUCT_UPDATED',
+        entity: 'Product',
+        entityId: product.id,
+        oldData: before,
+        newData: product,
+      });
+
+      return product;
     });
+
+    return updated;
   } catch (err: any) {
-    // Unique constraint violation on (provider, externalEventId) = duplicate delivery.
     if (err?.code === 'P2002') {
-      alreadyProcessed = true;
-    } else {
-      throw err;
+      throw new ApiError(409, 'One of those barcodes is already in use by another product');
     }
+    throw err;
   }
+}
 
-  if (alreadyProcessed) {
-    return { handled: true as const, duplicate: true as const };
-  }
+/** Deactivate rather than hard-delete — sale history references products by id. */
+export async function deactivateProduct(companyId: string, actorUserId: string, productId: string) {
+  const before = await prisma.product.findFirst({ where: { id: productId, companyId } });
+  if (!before) throw new ApiError(404, 'Product not found');
 
-  // Amount verification — never trust the webhook's status alone.
-  const amountMatches = Math.abs(params.amount - Number(transaction.amount)) < 1; // 1 unit tolerance for rounding
-  if (params.status === 'COMPLETED' && !amountMatches) {
-    await prisma.paymentTransaction.update({
-      where: { id: transaction.id },
-      data: { status: 'FAILED', rawResponse: params.raw as any },
+  return prisma.$transaction(async (tx) => {
+    const product = await tx.product.update({
+      where: { id: productId },
+      data: { isActive: false },
     });
-    await prisma.paymentEvent.updateMany({
-      where: { paymentTransactionId: transaction.id, externalEventId: params.externalEventId },
-      data: { processed: true, processedAt: new Date() },
+    await recordAudit(tx, {
+      companyId,
+      userId: actorUserId,
+      action: 'PRODUCT_DEACTIVATED',
+      entity: 'Product',
+      entityId: productId,
+      oldData: before,
+      newData: product,
     });
-    console.error('Webhook amount mismatch', {
-      expected: transaction.amount,
-      got: params.amount,
-      merchantReference: params.merchantReference,
-    });
-    return { handled: true as const, duplicate: false as const, mismatch: true as const };
-  }
+    return product;
+  });
+}
 
-  await prisma.paymentTransaction.update({
-    where: { id: transaction.id },
-    data: {
-      status: params.status,
-      providerReference: params.providerReference ?? transaction.providerReference,
-      rawResponse: params.raw as any,
+export async function listProducts(companyId: string, opts: { search?: string; branchId?: string } = {}) {
+  return prisma.product.findMany({
+    where: {
+      companyId,
+      isActive: true,
+      ...(opts.search
+        ? {
+            OR: [
+              { name: { contains: opts.search, mode: 'insensitive' } },
+              { sku: { contains: opts.search, mode: 'insensitive' } },
+              { barcodes: { some: { barcode: opts.search } } },
+            ],
+          }
+        : {}),
+    },
+    include: {
+      barcodes: true,
+      category: true,
+      brand: true,
+      inventory: opts.branchId ? { where: { branchId: opts.branchId } } : true,
+    },
+    orderBy: { name: 'asc' },
+    take: 200,
+  });
+}
+
+/** Product lookup by exact barcode — the hot path used when a scanner fires. */
+export async function findProductByBarcode(companyId: string, barcode: string, branchId: string) {
+  const match = await prisma.productBarcode.findUnique({
+    where: { barcode },
+    include: {
+      product: {
+        include: { inventory: { where: { branchId } } },
+      },
     },
   });
-
-  if (params.status === 'COMPLETED' && transaction.saleId) {
-    const sale = transaction.sale!;
-    await completeSaleFromPayment({
-      saleId: transaction.saleId,
-      method: transaction.paymentMethod,
-      amount: Number(transaction.amount),
-      reference: params.providerReference ?? params.externalEventId,
-      cashierId: sale.cashierId,
-      branchId: sale.branchId,
-      companyId: sale.companyId,
-    });
-  }
-
-  await prisma.paymentEvent.updateMany({
-    where: { paymentTransactionId: transaction.id, externalEventId: params.externalEventId },
-    data: { processed: true, processedAt: new Date() },
-  });
-
-  return { handled: true as const, duplicate: false as const };
+  if (!match || match.product.companyId !== companyId || !match.product.isActive) return null;
+  return match.product;
 }

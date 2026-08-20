@@ -17,6 +17,7 @@ interface Product {
   trackingType: TrackingType;
   weightUnit: string | null;
   inventory: { quantity: string | number }[];
+  barcodes: { barcode: string }[];
 }
 
 interface Branch {
@@ -40,10 +41,12 @@ export default function ProductsClient() {
   const [branch, setBranch] = useState<Branch | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  const [barcodes, setBarcodes] = useState<string[]>(['']);
   const [error, setError] = useState<string | null>(null);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState(emptyForm);
+  const [editBarcodes, setEditBarcodes] = useState<string[]>(['']);
   const [editError, setEditError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -76,6 +79,7 @@ export default function ProductsClient() {
     setError(null);
     try {
       const isWeight = form.trackingType === 'WEIGHT';
+      const cleanBarcodes = barcodes.map((b) => b.trim()).filter((b) => b.length > 0);
       const result = await apiFetch<{ product: { id: string } }>('/api/products', {
         method: 'POST',
         body: JSON.stringify({
@@ -87,6 +91,7 @@ export default function ProductsClient() {
           trackingType: form.trackingType,
           weightUnit: isWeight ? form.weightUnit : undefined,
           unit: isWeight ? form.weightUnit : 'pcs',
+          barcodes: cleanBarcodes,
         }),
       });
 
@@ -108,6 +113,7 @@ export default function ProductsClient() {
       }
 
       setForm(emptyForm);
+      setBarcodes(['']);
       setShowForm(false);
       load();
     } catch (err) {
@@ -128,6 +134,7 @@ export default function ProductsClient() {
       weightUnit: (p.weightUnit as 'kg' | 'g') ?? 'kg',
       initialStock: '0',
     });
+    setEditBarcodes(p.barcodes.length > 0 ? p.barcodes.map((b) => b.barcode) : ['']);
   }
 
   function closeEdit() {
@@ -142,6 +149,7 @@ export default function ProductsClient() {
     setSaving(true);
     try {
       const isWeight = editForm.trackingType === 'WEIGHT';
+      const cleanBarcodes = editBarcodes.map((b) => b.trim()).filter((b) => b.length > 0);
       await apiFetch(`/api/products/${editingId}`, {
         method: 'PATCH',
         body: JSON.stringify({
@@ -153,6 +161,7 @@ export default function ProductsClient() {
           trackingType: editForm.trackingType,
           weightUnit: isWeight ? editForm.weightUnit : undefined,
           unit: isWeight ? editForm.weightUnit : 'pcs',
+          barcodes: cleanBarcodes,
         }),
       });
       closeEdit();
@@ -301,6 +310,8 @@ export default function ProductsClient() {
               </div>
             )}
 
+            <BarcodeFields values={barcodes} onChange={setBarcodes} />
+
             <div className="flex items-center gap-3">
               <button type="submit" className="rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium px-4 py-2.5">Save</button>
               {error && <p className="text-sm text-danger">{error}</p>}
@@ -412,6 +423,8 @@ export default function ProductsClient() {
               )}
             </div>
 
+            <BarcodeFields values={editBarcodes} onChange={setEditBarcodes} />
+
             {editError && <p className="text-sm text-danger">{editError}</p>}
 
             <div className="flex items-center gap-3 pt-1">
@@ -464,5 +477,57 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="block text-xs text-ink/50 mb-1">{label}</span>
       {children}
     </label>
+  );
+}
+
+/**
+ * Editable list of barcodes for a product. Defaults to a single field
+ * (most products have one barcode), with an "add another" option for
+ * the ones that legitimately have more — e.g. a case/carton barcode
+ * alongside the single-unit barcode. Blank fields are dropped before
+ * the form submits, so leaving it empty is fine.
+ */
+function BarcodeFields({ values, onChange }: { values: string[]; onChange: (next: string[]) => void }) {
+  function updateAt(i: number, value: string) {
+    const next = [...values];
+    next[i] = value;
+    onChange(next);
+  }
+
+  function addField() {
+    onChange([...values, '']);
+  }
+
+  function removeAt(i: number) {
+    const next = values.filter((_, idx) => idx !== i);
+    onChange(next.length > 0 ? next : ['']);
+  }
+
+  return (
+    <div className="space-y-2">
+      <span className="block text-xs text-ink/50">Barcode{values.length > 1 ? 's' : ''}</span>
+      {values.map((value, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <input
+            value={value}
+            onChange={(e) => updateAt(i, e.target.value)}
+            placeholder="Scan or type a barcode (optional)"
+            className="input flex-1"
+          />
+          {values.length > 1 && (
+            <button
+              type="button"
+              onClick={() => removeAt(i)}
+              className="text-xs text-danger hover:opacity-80 px-1 whitespace-nowrap"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      ))}
+      <button type="button" onClick={addField} className="text-xs font-medium text-brand-600 hover:text-brand-700">
+        + Add another barcode
+      </button>
+    </div>
   );
 }

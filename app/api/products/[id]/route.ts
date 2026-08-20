@@ -17,6 +17,8 @@ const updateSchema = z.object({
   weightUnit: z.enum(['kg', 'g']).optional(),
   imageUrl: z.string().url().optional(),
   isActive: z.boolean().optional(),
+  // Replaces the product's full set of barcodes when present.
+  barcodes: z.array(z.string()).optional(),
 });
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {

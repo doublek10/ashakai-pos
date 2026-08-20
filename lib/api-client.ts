@@ -123,6 +123,11 @@ const GATEWAY_ROUTES: GatewayRoute[] = [
   { test: (m, p) => m === 'POST' && p === '/api/payments/mpesa/manual', resolve: () => ({ file: 'payments/mpesa_manual_pending.php' }) },
   { test: (m, p) => m === 'GET' && p === '/api/payments/mpesa/c2b-lookup', resolve: (_m, _p, q) => ({ file: 'payments/mpesa_c2b_lookup.php', extraQuery: Object.fromEntries(q) }) },
   { test: (m, p) => m === 'POST' && p === '/api/payments/mpesa/c2b-match', resolve: () => ({ file: 'payments/mpesa_c2b_match.php' }) },
+
+  // "Activate M-Pesa capture" button on the till (OWNER only) — wraps
+  // gateway/scripts/register_c2b_urls.php so nobody has to hand-type
+  // that PHP URL. Safe to click repeatedly; it just re-registers.
+  { test: (m, p) => m === 'GET' && p === '/api/settings/mpesa/register-c2b', resolve: () => ({ file: 'scripts/register_c2b_urls.php' }) },
 ];
 
 function resolveGatewayRoute(method: string, path: string, search: URLSearchParams) {

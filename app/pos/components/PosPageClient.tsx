@@ -9,7 +9,7 @@ interface Branch {
   name: string;
 }
 
-export default function PosPageClient({ cashierName }: { cashierName: string }) {
+export default function PosPageClient({ cashierName, role }: { cashierName: string; role: string }) {
   const [branch, setBranch] = useState<Branch | null | 'loading'>('loading');
 
   useEffect(() => {
@@ -26,5 +26,5 @@ export default function PosPageClient({ cashierName }: { cashierName: string }) 
     return <div className="p-8 text-sm text-ink/60">No branch configured yet. Ask the owner to set one up.</div>;
   }
 
-  return <PosScreen cashierName={cashierName} branchId={branch.id} />;
+  return <PosScreen cashierName={cashierName} branchId={branch.id} role={role} />;
 }

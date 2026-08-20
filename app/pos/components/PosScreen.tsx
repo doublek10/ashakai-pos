@@ -6,6 +6,7 @@ import { signOut } from '@/lib/auth/logout-client';
 import ReceiptPrint, { fetchReceiptData } from '@/components/receipts/ReceiptPrint';
 import { ReceiptData } from '@/lib/receipts/escpos';
 import { useScale } from '@/lib/scale/scale-client';
+import { MpesaCaptureButton } from '@/components/pos/MpesaCaptureButton';
 
 type TrackingType = 'PIECE' | 'WEIGHT';
 
@@ -37,9 +38,11 @@ function convertToProductUnit(value: number, from: 'kg' | 'g', to: 'kg' | 'g') {
 export default function PosScreen({
   cashierName,
   branchId,
+  role,
 }: {
   cashierName: string;
   branchId: string;
+  role: string;
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Product[]>([]);
@@ -236,6 +239,7 @@ export default function PosScreen({
             <span className={`h-1.5 w-1.5 rounded-full ${scale.connected ? 'bg-brand-500' : 'bg-ink/20'}`} />
             {scale.connected ? 'Scale connected' : 'No scale'}
           </span>
+          <MpesaCaptureButton />
         </div>
         <form
           className="flex-1 max-w-xl mx-6 relative"

@@ -11,5 +11,5 @@ export default async function PosPage() {
   // prisma.branch.findFirst() on the server breaks in gateway mode, since
   // DATABASE_URL is intentionally not set when the DB is only reachable
   // through the PHP gateway on cPanel.
-  return <PosPageClient cashierName={session.name} />;
+  return <PosPageClient cashierName={session.name} role={session.role} />;
 }

@@ -32,6 +32,7 @@ export default function DashboardClient({ ownerName }: { ownerName: string }) {
           <h1 className="text-lg font-semibold">Welcome back, {ownerName}</h1>
         </div>
         <nav className="flex gap-5 text-sm">
+          <a href="/sales" className="text-ink/60 hover:text-ink">Sales</a>
           <a href="/products" className="text-ink/60 hover:text-ink">Products</a>
           <a href="/employees" className="text-ink/60 hover:text-ink">Employees</a>
           <a href="/pos" className="text-ink/60 hover:text-ink">POS</a>

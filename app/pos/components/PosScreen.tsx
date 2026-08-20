@@ -53,6 +53,15 @@ export default function PosScreen({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
+
+  // Password-confirmation gate for removing a line from the cart —
+  // any cashier/product manager/owner can remove a scanned item, but
+  // only after re-entering their own login password.
+  const [removeTarget, setRemoveTarget] = useState<{ productId: string; name: string } | null>(null);
+  const [removePassword, setRemovePassword] = useState('');
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+
   const searchRef = useRef<HTMLInputElement>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -118,6 +127,44 @@ export default function PosScreen({
     if (!scale.reading) return;
     const qty = convertToProductUnit(scale.reading.weight, scale.reading.unit, (weightUnit as 'kg' | 'g') ?? 'kg');
     updateQty(productId, qty);
+  }
+
+  /** Opens the "confirm your password" modal for a given cart line. */
+  function askRemove(productId: string, name: string) {
+    setRemoveTarget({ productId, name });
+    setRemovePassword('');
+    setRemoveError(null);
+  }
+
+  function closeRemoveModal() {
+    if (removeBusy) return; // don't let it be dismissed mid-check
+    setRemoveTarget(null);
+    setRemovePassword('');
+    setRemoveError(null);
+  }
+
+  /** Re-checks the logged-in user's own password, then removes the line. */
+  async function confirmRemove() {
+    if (!removeTarget) return;
+    if (!removePassword) {
+      setRemoveError('Enter your password');
+      return;
+    }
+    setRemoveBusy(true);
+    setRemoveError(null);
+    try {
+      await apiFetch('/api/auth/verify-password', {
+        method: 'POST',
+        body: JSON.stringify({ password: removePassword }),
+      });
+      setCart((prev) => prev.filter((l) => l.product.id !== removeTarget.productId));
+      setRemoveTarget(null);
+      setRemovePassword('');
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : 'Incorrect password');
+    } finally {
+      setRemoveBusy(false);
+    }
   }
 
   const subtotal = cart.reduce((s, l) => s + Number(l.product.sellingPrice) * l.quantity, 0);
@@ -336,6 +383,13 @@ export default function PosScreen({
                         <span className="w-20 text-right text-sm font-medium">
                           KES {(Number(line.product.sellingPrice) * line.quantity).toFixed(2)}
                         </span>
+                        <button
+                          onClick={() => askRemove(line.product.id, line.product.name)}
+                          title="Remove from cart"
+                          className="text-xs font-medium text-red-600 hover:text-red-700 px-1.5"
+                        >
+                          Remove
+                        </button>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
@@ -345,6 +399,13 @@ export default function PosScreen({
                         <span className="w-20 text-right text-sm font-medium">
                           KES {(Number(line.product.sellingPrice) * line.quantity).toFixed(2)}
                         </span>
+                        <button
+                          onClick={() => askRemove(line.product.id, line.product.name)}
+                          title="Remove from cart"
+                          className="text-xs font-medium text-red-600 hover:text-red-700 px-1.5"
+                        >
+                          Remove
+                        </button>
                       </div>
                     )}
                   </div>
@@ -435,6 +496,54 @@ export default function PosScreen({
             >
               Close · new sale
             </button>
+          </div>
+        </div>
+      )}
+
+      {removeTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full">
+            <p className="text-sm font-medium">Remove &quot;{removeTarget.name}&quot; from the cart?</p>
+            <p className="text-xs text-ink/50 mt-1">Enter your login password to confirm.</p>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                confirmRemove();
+              }}
+            >
+              <input
+                type="password"
+                autoFocus
+                value={removePassword}
+                onChange={(e) => {
+                  setRemovePassword(e.target.value);
+                  setRemoveError(null);
+                }}
+                placeholder="Your password"
+                className={`w-full mt-4 rounded-lg border px-3 py-2 text-sm ${
+                  removeError ? 'border-red-400' : 'border-black/10'
+                }`}
+              />
+              {removeError && <p className="text-xs text-red-600 mt-1.5">{removeError}</p>}
+
+              <div className="flex gap-2 mt-4">
+                <button
+                  type="button"
+                  onClick={closeRemoveModal}
+                  disabled={removeBusy}
+                  className="flex-1 rounded-lg border border-black/10 py-2 text-sm font-medium hover:bg-black/5 disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={removeBusy || !removePassword}
+                  className="flex-1 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-sm font-medium py-2"
+                >
+                  {removeBusy ? 'Checking…' : 'Remove item'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

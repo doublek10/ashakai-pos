@@ -88,6 +88,9 @@ interface GatewayRoute {
 const GATEWAY_ROUTES: GatewayRoute[] = [
   { test: (m, p) => m === 'POST' && p === '/api/auth/login', resolve: () => ({ file: 'auth/login.php' }) },
   { test: (m, p) => m === 'POST' && p === '/api/auth/logout', resolve: () => ({ file: 'auth/logout.php' }) },
+  // Re-checks the logged-in user's own password without issuing a new
+  // session — used by the POS "remove item from cart" confirmation.
+  { test: (m, p) => m === 'POST' && p === '/api/auth/verify-password', resolve: () => ({ file: 'auth/verify_password.php' }) },
 
   { test: (m, p) => m === 'GET' && p === '/api/products', resolve: (_m, _p, q) => ({ file: 'products/list.php', extraQuery: Object.fromEntries(q) }) },
   { test: (m, p) => m === 'POST' && p === '/api/products', resolve: () => ({ file: 'products/create.php' }) },
@@ -101,6 +104,10 @@ const GATEWAY_ROUTES: GatewayRoute[] = [
   { test: (m, p) => m === 'POST' && p === '/api/sales', resolve: () => ({ file: 'sales/create.php' }) },
   { test: (m, p) => m === 'GET' && p === '/api/sales', resolve: (_m, _p, q) => ({ file: 'sales/list.php', extraQuery: Object.fromEntries(q) }) },
   { test: (m, p) => m === 'GET' && /^\/api\/sales\/[^/]+$/.test(p), resolve: (_m, p) => ({ file: 'sales/get.php', extraQuery: { saleId: p.split('/').pop()! } }) },
+
+  // Owner-only "Sales" page: sales grouped by day (today first),
+  // filterable by payment method, searchable by date.
+  { test: (m, p) => m === 'GET' && p === '/api/sales/owner-report', resolve: (_m, _p, q) => ({ file: 'sales/owner_report.php', extraQuery: Object.fromEntries(q) }) },
 
   { test: (m, p) => m === 'GET' && p === '/api/users', resolve: () => ({ file: 'users/list.php' }) },
   { test: (m, p) => m === 'POST' && p === '/api/users', resolve: () => ({ file: 'users/create.php' }) },

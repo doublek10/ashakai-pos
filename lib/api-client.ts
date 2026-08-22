@@ -103,11 +103,16 @@ const GATEWAY_ROUTES: GatewayRoute[] = [
 
   { test: (m, p) => m === 'POST' && p === '/api/sales', resolve: () => ({ file: 'sales/create.php' }) },
   { test: (m, p) => m === 'GET' && p === '/api/sales', resolve: (_m, _p, q) => ({ file: 'sales/list.php', extraQuery: Object.fromEntries(q) }) },
-  { test: (m, p) => m === 'GET' && /^\/api\/sales\/[^/]+$/.test(p), resolve: (_m, p) => ({ file: 'sales/get.php', extraQuery: { saleId: p.split('/').pop()! } }) },
 
   // Owner-only "Sales" page: sales grouped by day (today first),
-  // filterable by payment method, searchable by date.
+  // filterable by payment method, searchable by date. This exact-path
+  // rule MUST come before the generic "/api/sales/:id" rule below —
+  // that one matches on a regex ([^/]+) and would otherwise swallow
+  // "owner-report" as if it were a saleId, since GATEWAY_ROUTES.find()
+  // returns the first rule that matches.
   { test: (m, p) => m === 'GET' && p === '/api/sales/owner-report', resolve: (_m, _p, q) => ({ file: 'sales/owner_report.php', extraQuery: Object.fromEntries(q) }) },
+
+  { test: (m, p) => m === 'GET' && /^\/api\/sales\/[^/]+$/.test(p), resolve: (_m, p) => ({ file: 'sales/get.php', extraQuery: { saleId: p.split('/').pop()! } }) },
 
   { test: (m, p) => m === 'GET' && p === '/api/users', resolve: () => ({ file: 'users/list.php' }) },
   { test: (m, p) => m === 'POST' && p === '/api/users', resolve: () => ({ file: 'users/create.php' }) },

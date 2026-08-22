@@ -10,6 +10,7 @@ import {
 } from '@/lib/receipts/webusb-printer';
 import { buildReceiptBytes, ReceiptData } from '@/lib/receipts/escpos';
 import { apiFetch } from '@/lib/api-client';
+import { pauseScaleForPrint, resumeScaleAfterPrint } from '@/lib/scale/scale-client';
 
 let cachedPrinter: ConnectedPrinter | null = null;
 
@@ -31,6 +32,12 @@ export default function ReceiptPrint({ receipt }: { receipt: ReceiptData }) {
   async function printViaThermalPrinter() {
     setStatus(null);
     setPrinting(true);
+    // Hold off any scale-bridge reconnect activity for the duration of
+    // this request — WebUSB's device permission prompt only works
+    // inside a brief window right after the click, and an unrelated
+    // background state update landing in that same instant is exactly
+    // what previously made prints silently fail to fire.
+    pauseScaleForPrint();
     try {
       if (!isWebUsbSupported()) {
         throw new Error('This browser does not support direct printer connections. Use Chrome or Edge.');
@@ -50,6 +57,7 @@ export default function ReceiptPrint({ receipt }: { receipt: ReceiptData }) {
       setStatus(err instanceof Error ? err.message : 'Could not reach the printer — check it is connected and powered on.');
     } finally {
       setPrinting(false);
+      resumeScaleAfterPrint();
     }
   }
 

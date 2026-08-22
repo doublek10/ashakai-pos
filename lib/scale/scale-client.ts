@@ -30,16 +30,26 @@ const DEFAULT_BRIDGE_URL =
   process.env.NEXT_PUBLIC_SCALE_BRIDGE_URL ||
   'ws://localhost:4501';
 
+// Master kill switch. Set NEXT_PUBLIC_SCALE_ENABLED=false in .env to
+// stop the app from ever attempting the scale-bridge connection — no
+// WebSocket is opened at all, so there's no "connection failed"
+// console noise and no background retry loop. Cashiers simply type
+// weights in by hand, same as when a scale is temporarily unplugged.
+// Defaults to enabled (true) so existing deployments are unaffected;
+// only an explicit "false" turns it off.
+const SCALE_ENABLED = process.env.NEXT_PUBLIC_SCALE_ENABLED !== 'false';
+
 type Status = 'idle' | 'connecting' | 'connected' | 'unavailable';
 
 export function useScale(bridgeUrl: string = DEFAULT_BRIDGE_URL) {
-  const [status, setStatus] = useState<Status>('idle');
+  const [status, setStatus] = useState<Status>(SCALE_ENABLED ? 'idle' : 'unavailable');
   const [reading, setReading] = useState<ScaleReading | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
+    if (!SCALE_ENABLED) return; // scale disabled — skip connecting entirely
     mountedRef.current = true;
     connect();
     return () => {

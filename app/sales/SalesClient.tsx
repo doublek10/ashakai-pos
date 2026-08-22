@@ -1,8 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '@/lib/api-client';
 import { signOut } from '@/lib/auth/logout-client';
+
+interface SaleItemRow {
+  productId: string;
+  productName: string;
+  sku: string;
+  quantity: number;
+  weightUnit: string | null;
+  lineTotal: number;
+}
 
 interface SaleRow {
   id: string;
@@ -13,6 +22,7 @@ interface SaleRow {
   paymentMethod: string | null;
   paymentReference: string | null;
   receiptNumber: string | null;
+  items: SaleItemRow[];
 }
 
 interface SaleGroup {
@@ -64,6 +74,12 @@ export default function SalesClient({ ownerName }: { ownerName: string }) {
     };
   }, [methodFilter, dateSearch]);
 
+  // All metrics below are derived from exactly the sales currently
+  // loaded (i.e. respecting the method/date filters above) — so
+  // "POS metrics" always describes whatever the owner is looking at,
+  // not always all-time totals.
+  const metrics = useMemo(() => buildMetrics(groups), [groups]);
+
   return (
     <div className="min-h-screen bg-paper">
       <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-black/5">
@@ -80,7 +96,7 @@ export default function SalesClient({ ownerName }: { ownerName: string }) {
         </nav>
       </header>
 
-      <main className="p-8 max-w-5xl mx-auto space-y-6">
+      <main className="p-8 max-w-6xl mx-auto space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex gap-2">
             {(['ALL', 'CASH', 'MPESA'] as MethodFilter[]).map((m) => (
@@ -114,6 +130,8 @@ export default function SalesClient({ ownerName }: { ownerName: string }) {
 
         {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
 
+        {!loading && !error && groups.length > 0 && <MetricsPanel metrics={metrics} />}
+
         {loading ? (
           <p className="text-sm text-ink/40">Loading sales…</p>
         ) : groups.length === 0 ? (
@@ -129,6 +147,162 @@ export default function SalesClient({ ownerName }: { ownerName: string }) {
     </div>
   );
 }
+
+// ------------------------------------------------------------------
+// Metrics: aggregated purely client-side from the sales already
+// fetched for the current filter — no extra API call needed, since
+// the owner-report response already carries every line item.
+// ------------------------------------------------------------------
+
+interface ProductStat {
+  productName: string;
+  unitsSold: number;
+  weightUnit: string | null; // set when this product is sold by weight, so units can be labelled "kg" instead of a bare count
+  revenue: number;
+  timesSold: number;
+}
+
+interface Metrics {
+  totalRevenue: number;
+  saleCount: number;
+  averageSale: number;
+  byPaymentMethod: { method: string; total: number; count: number }[];
+  topByRevenue: ProductStat[];
+  topByUnits: ProductStat[];
+}
+
+function buildMetrics(groups: SaleGroup[]): Metrics {
+  const allSales = groups.flatMap((g) => g.sales);
+  const totalRevenue = allSales.reduce((sum, s) => sum + s.total, 0);
+  const saleCount = allSales.length;
+  const averageSale = saleCount > 0 ? totalRevenue / saleCount : 0;
+
+  const methodTotals = new Map<string, { total: number; count: number }>();
+  for (const sale of allSales) {
+    const key = sale.paymentMethod ?? 'UNKNOWN';
+    const entry = methodTotals.get(key) ?? { total: 0, count: 0 };
+    entry.total += sale.total;
+    entry.count += 1;
+    methodTotals.set(key, entry);
+  }
+  const byPaymentMethod = Array.from(methodTotals.entries())
+    .map(([method, v]) => ({ method, ...v }))
+    .sort((a, b) => b.total - a.total);
+
+  // Aggregate every line item across every sale, by product name — this
+  // is what makes the panel useful for stock analysis: which products
+  // are actually moving, by both revenue and quantity.
+  const productTotals = new Map<string, ProductStat>();
+  for (const sale of allSales) {
+    for (const item of sale.items) {
+      const entry = productTotals.get(item.productName) ?? {
+        productName: item.productName,
+        unitsSold: 0,
+        weightUnit: item.weightUnit,
+        revenue: 0,
+        timesSold: 0,
+      };
+      entry.unitsSold += item.quantity;
+      entry.revenue += item.lineTotal;
+      entry.timesSold += 1;
+      productTotals.set(item.productName, entry);
+    }
+  }
+  const products = Array.from(productTotals.values());
+  const topByRevenue = [...products].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+  const topByUnits = [...products].sort((a, b) => b.unitsSold - a.unitsSold).slice(0, 5);
+
+  return { totalRevenue, saleCount, averageSale, byPaymentMethod, topByRevenue, topByUnits };
+}
+
+function MetricsPanel({ metrics }: { metrics: Metrics }) {
+  return (
+    <div className="bg-white rounded-xl border border-black/5 p-5 space-y-5">
+      <div>
+        <p className="text-xs font-medium text-ink/40 uppercase tracking-wide mb-3">POS metrics · this filter</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatCard label="Total revenue" value={`KES ${metrics.totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} />
+          <StatCard label="Sales count" value={metrics.saleCount.toLocaleString()} />
+          <StatCard label="Average sale" value={`KES ${metrics.averageSale.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} />
+          <StatCard
+            label="Top payment method"
+            value={metrics.byPaymentMethod[0] ? formatMethod(metrics.byPaymentMethod[0].method) : '—'}
+          />
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-3 gap-5">
+        <div>
+          <p className="text-xs font-medium text-ink/40 uppercase tracking-wide mb-2">By payment method</p>
+          {metrics.byPaymentMethod.length === 0 ? (
+            <p className="text-xs text-ink/40">No sales yet.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {metrics.byPaymentMethod.map((m) => (
+                <li key={m.method} className="flex justify-between text-sm">
+                  <span className="text-ink/60">{formatMethod(m.method)} · {m.count}</span>
+                  <span className="font-medium">KES {m.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <p className="text-xs font-medium text-ink/40 uppercase tracking-wide mb-2">Top products · by revenue</p>
+          {metrics.topByRevenue.length === 0 ? (
+            <p className="text-xs text-ink/40">No items sold yet.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {metrics.topByRevenue.map((p) => (
+                <li key={p.productName} className="flex justify-between text-sm">
+                  <span className="text-ink/60 truncate pr-2">{p.productName}</span>
+                  <span className="font-medium whitespace-nowrap">KES {p.revenue.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <p className="text-xs font-medium text-ink/40 uppercase tracking-wide mb-2">Top products · by quantity</p>
+          {metrics.topByUnits.length === 0 ? (
+            <p className="text-xs text-ink/40">No items sold yet.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {metrics.topByUnits.map((p) => (
+                <li key={p.productName} className="flex justify-between text-sm">
+                  <span className="text-ink/60 truncate pr-2">{p.productName}</span>
+                  <span className="font-medium whitespace-nowrap">
+                    {p.unitsSold.toLocaleString(undefined, { maximumFractionDigits: 3 })}
+                    {p.weightUnit ? ` ${p.weightUnit}` : ' pcs'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-paper border border-black/5 px-3.5 py-3">
+      <p className="text-[11px] text-ink/40 uppercase tracking-wide">{label}</p>
+      <p className="text-base font-semibold mt-0.5">{value}</p>
+    </div>
+  );
+}
+
+function formatMethod(method: string) {
+  return method === 'MPESA' ? 'M-Pesa' : method.replaceAll('_', ' ');
+}
+
+// ------------------------------------------------------------------
+// Per-day table (existing behaviour, now with a Products column).
+// ------------------------------------------------------------------
 
 function SalesDayGroup({ group }: { group: SaleGroup }) {
   return (
@@ -152,6 +326,7 @@ function SalesDayGroup({ group }: { group: SaleGroup }) {
           <tr className="text-left text-ink/40 text-xs uppercase">
             <th className="pb-2 font-medium">Time</th>
             <th className="pb-2 font-medium">Receipt</th>
+            <th className="pb-2 font-medium">Products</th>
             <th className="pb-2 font-medium">Cashier</th>
             <th className="pb-2 font-medium">Method</th>
             <th className="pb-2 font-medium text-right">Total</th>
@@ -160,19 +335,47 @@ function SalesDayGroup({ group }: { group: SaleGroup }) {
         <tbody>
           {group.sales.map((sale) => (
             <tr key={sale.id} className="border-t border-black/5">
-              <td className="py-2 text-ink/60">
+              <td className="py-2 text-ink/60 align-top whitespace-nowrap">
                 {new Date(sale.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </td>
-              <td className="py-2 text-ink/60">{sale.receiptNumber ?? '—'}</td>
-              <td className="py-2">{sale.cashierName}</td>
-              <td className="py-2">
+              <td className="py-2 text-ink/60 align-top whitespace-nowrap">{sale.receiptNumber ?? '—'}</td>
+              <td className="py-2 align-top max-w-xs">
+                <ProductsCell items={sale.items} />
+              </td>
+              <td className="py-2 align-top whitespace-nowrap">{sale.cashierName}</td>
+              <td className="py-2 align-top whitespace-nowrap">
                 <PaymentBadge method={sale.paymentMethod} />
               </td>
-              <td className="py-2 text-right font-medium">KES {sale.total.toLocaleString()}</td>
+              <td className="py-2 text-right font-medium align-top whitespace-nowrap">KES {sale.total.toLocaleString()}</td>
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/** Renders a sale's line items as "Name (qty unit)" chips, e.g. "Rice (0.5kg), Sugar (3)". */
+function ProductsCell({ items }: { items: SaleItemRow[] }) {
+  if (!items || items.length === 0) {
+    return <span className="text-xs text-ink/40">—</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {items.map((item, i) => (
+        <span
+          key={`${item.productId}-${i}`}
+          title={`${item.productName} · KES ${item.lineTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
+          className="text-xs bg-black/5 text-ink/70 rounded-full px-2 py-0.5 whitespace-nowrap"
+        >
+          {item.productName}
+          <span className="text-ink/40">
+            {' '}
+            ({item.quantity.toLocaleString(undefined, { maximumFractionDigits: 3 })}
+            {item.weightUnit ?? ''})
+          </span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -193,7 +396,7 @@ function PaymentBadge({ method }: { method: string | null }) {
             : 'text-ink/60 bg-black/5 border-black/10'
       }`}
     >
-      {method === 'MPESA' ? 'M-Pesa' : method.replaceAll('_', ' ')}
+      {formatMethod(method)}
     </span>
   );
 }

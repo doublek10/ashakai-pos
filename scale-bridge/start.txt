@@ -1,0 +1,24 @@
+1. Install Node.js
+2. Get the scale-bridge folder onto the till PC
+Copy the whole POS-main/scale-bridge folder from the zip you have onto the till computer — anywhere is fine, e.g. C:\pos-scale-bridge\.
+
+3. Plug in the scale via USB, or RS232-to-USB adapter if it's an older serial scale. If Windows doesn't recognize it automatically, install the adapter's driver (most are CH340, PL2303, or FTDI — search the adapter brand + "driver").
+
+4. Install dependencies
+    cd C:\pos-scale-bridge
+npm install
+
+5. Find which port the scale is on:  npm run list-ports
+
+6. Create your config file:  copy .env.example .env
+
+Open .env in Notepad and set:
+
+SCALE_PORT=COM3 (from step 5)
+SCALE_BAUD_RATE=9600 (check your scale's manual/DIP switches — 9600 is the most common default)
+SCALE_UNIT=kg (whatever the scale's display is set to)
+
+Leave BRIDGE_PORT=4501 as-is — that's what the POS expects by default.
+
+7. Start it:  npm start
+You should see something like: [scale-bridge] connected to scale on COM3 @ 9600 baud
